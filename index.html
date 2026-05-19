@@ -57,7 +57,7 @@ const EXAM = {
 
 const L = ["\u05D0","\u05D1","\u05D2","\u05D3"];
 
-const MANAGER_EMAIL = "sushi.umino@gmail.com";
+const WEB3FORMS_KEY = "2502be40-b2fd-40c0-bdde-f6c918cf7ff4";
 const STORAGE_KEY = "umino_used_tokens";
 
 function getToken() {
@@ -134,20 +134,25 @@ function App() {
       q.pts.forEach(pt => { body += `  • ${pt}\n`; });
     });
 
-    const formData = new FormData();
-    formData.append("name", name);
-    formData.append("_subject", `מבחן תפריט UMINO – ${name} – ${mcPct}%`);
-    formData.append("_captcha", "false");
-    formData.append("_template", "box");
-    formData.append("message", body);
-
     try {
-      const res = await fetch(`https://formsubmit.co/ajax/${MANAGER_EMAIL}`, {
+      const res = await fetch("https://api.web3forms.com/submit", {
         method: "POST",
-        headers: { Accept: "application/json" },
-        body: formData,
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+        },
+        body: JSON.stringify({
+          access_key: WEB3FORMS_KEY,
+          subject: `מבחן תפריט UMINO – ${name} – ${mcPct}%`,
+          from_name: `UMINO Quiz – ${name}`,
+          name: name,
+          message: body,
+        }),
       });
-      if (!res.ok) throw new Error("HTTP " + res.status);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.success === false) {
+        throw new Error(data.message || "HTTP " + res.status);
+      }
       setSent(true);
       if (token) markTokenUsed(token);
     } catch (e) {
