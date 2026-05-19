@@ -57,14 +57,46 @@ const EXAM = {
 
 const L = ["\u05D0","\u05D1","\u05D2","\u05D3"];
 
+const MANAGER_EMAIL = "sushi.umino@gmail.com";
+const STORAGE_KEY = "umino_used_tokens";
+
+function getToken() {
+  const p = new URLSearchParams(window.location.search);
+  return p.get("t");
+}
+function getUsedTokens() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]"); } catch { return []; }
+}
+function markTokenUsed(token) {
+  const used = getUsedTokens();
+  if (!used.includes(token)) {
+    used.push(token);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(used));
+  }
+}
+function genToken() {
+  return Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
+}
+function isAdmin() {
+  return new URLSearchParams(window.location.search).get("admin") === "1";
+}
+
 function App() {
-  const [screen, setScreen] = useState("start");
+  const token = getToken();
+  const admin = isAdmin();
+  const usedTokens = getUsedTokens();
+  const tokenValid = token && !usedTokens.includes(token);
+
+  const [screen, setScreen] = useState(admin ? "admin" : (tokenValid ? "start" : "locked"));
   const [name, setName] = useState("");
   const [idx, setIdx] = useState(0);
   const [mcAns, setMcAns] = useState({});
   const [openAns, setOpenAns] = useState({});
   const [sel, setSel] = useState(null);
   const [fb, setFb] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
+  const [sendError, setSendError] = useState("");
 
   const all = useMemo(() => [
     ...EXAM.mc.map(q => ({...q, type:"mc"})),
@@ -74,29 +106,125 @@ function App() {
   const cur = all[idx];
   const pct = (idx / total) * 100;
 
-  const mcScore = useMemo(() => {
-    if (screen !== "results") return 0;
-    return EXAM.mc.filter(q => mcAns[q.id] === q.c).length;
-  }, [screen, mcAns]);
+  const submitResults = useCallback(async (finalMcAns, finalOpenAns) => {
+    setSending(true);
+    setSendError("");
+    const mcCorrect = EXAM.mc.filter(q => finalMcAns[q.id] === q.c).length;
+    const mcPct = Math.round((mcCorrect / EXAM.mc.length) * 100);
+    const passed = mcPct >= 75;
+
+    let body = `מבחן תפריט UMINO – תוצאות\n`;
+    body += `שם: ${name}\n`;
+    body += `תאריך: ${new Date().toLocaleString("he-IL", { timeZone: "Asia/Jerusalem" })}\n`;
+    body += `ציון אמריקאיות: ${mcCorrect}/${EXAM.mc.length} (${mcPct}%)\n`;
+    body += `סטטוס: ${passed ? "עבר/ה ✓" : "לא עבר/ה ✗"}\n`;
+    body += `\n========== שאלות אמריקאיות ==========\n`;
+    EXAM.mc.forEach(q => {
+      const ans = finalMcAns[q.id];
+      const ok = ans === q.c;
+      body += `\n${q.id}. [${ok ? "✓" : "✗"}] ${q.q}\n`;
+      body += `   ענה: ${ans != null ? L[ans] + " - " + q.o[ans] : "(לא ענה)"}\n`;
+      if (!ok) body += `   נכון: ${L[q.c]} - ${q.o[q.c]}\n`;
+    });
+    body += `\n========== שאלות פתוחות ==========\n`;
+    EXAM.open.forEach(q => {
+      body += `\n${q.id}. ${q.q}\n`;
+      body += `תשובת העובד/ת:\n${finalOpenAns[q.id] || "(לא נענה)"}\n`;
+      body += `נקודות מצופות:\n`;
+      q.pts.forEach(pt => { body += `  • ${pt}\n`; });
+    });
+
+    const formData = new FormData();
+    formData.append("name", name);
+    formData.append("_subject", `מבחן תפריט UMINO – ${name} – ${mcPct}%`);
+    formData.append("_captcha", "false");
+    formData.append("_template", "box");
+    formData.append("message", body);
+
+    try {
+      const res = await fetch(`https://formsubmit.co/ajax/${MANAGER_EMAIL}`, {
+        method: "POST",
+        headers: { Accept: "application/json" },
+        body: formData,
+      });
+      if (!res.ok) throw new Error("HTTP " + res.status);
+      setSent(true);
+      if (token) markTokenUsed(token);
+    } catch (e) {
+      setSendError("שליחת התוצאות נכשלה. אנא צרי קשר עם המנהלת ושלחי צילום מסך של דף התוצאות.");
+      if (token) markTokenUsed(token);
+    } finally {
+      setSending(false);
+    }
+  }, [name, token]);
+
+  const finishExam = useCallback((finalMcAns, finalOpenAns) => {
+    setScreen("results");
+    submitResults(finalMcAns, finalOpenAns);
+  }, [submitResults]);
 
   const pickMc = useCallback((i) => {
     if (fb) return;
     setSel(i);
     setFb(true);
-    setMcAns(p => ({...p, [cur.id]: i}));
+    const updated = {...mcAns, [cur.id]: i};
+    setMcAns(updated);
     setTimeout(() => {
       setFb(false); setSel(null);
-      idx < total-1 ? setIdx(n=>n+1) : setScreen("results");
+      if (idx < total-1) setIdx(n=>n+1);
+      else finishExam(updated, openAns);
     }, 1200);
-  }, [fb, cur, idx, total]);
+  }, [fb, cur, idx, total, mcAns, openAns, finishExam]);
 
   const nextOpen = useCallback(() => {
-    idx < total-1 ? setIdx(n=>n+1) : setScreen("results");
-  }, [idx, total]);
+    if (idx < total-1) setIdx(n=>n+1);
+    else finishExam(mcAns, openAns);
+  }, [idx, total, mcAns, openAns, finishExam]);
 
-  const restart = () => {
-    setScreen("start"); setIdx(0); setMcAns({}); setOpenAns({}); setSel(null); setFb(false); setName("");
-  };
+  // ── LOCKED ──
+  if (screen === "locked") return (
+    <div style={S.wrap}>
+      <div style={S.center}>
+        <div style={S.kanji}>海</div>
+        <h1 style={S.logo}>UMINO</h1>
+        <p style={S.sub}>מבחן תפריט</p>
+        <div style={{...S.qCard, maxWidth:420, textAlign:"center"}}>
+          <p style={{fontSize:16,lineHeight:1.7,margin:0,color:"#e8e8e8"}}>
+            {token ? "הקישור הזה כבר שומש." : "קישור לא תקין."}
+          </p>
+          <p style={{fontSize:14,lineHeight:1.7,marginTop:12,color:"#888"}}>
+            כדי לגשת למבחן, יש לבקש מהמנהלת קישור חדש.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+
+  // ── ADMIN ──
+  if (screen === "admin") {
+    const base = window.location.origin + window.location.pathname;
+    const newLink = `${base}?t=${genToken()}`;
+    return (
+      <div style={S.wrap}>
+        <div style={S.center}>
+          <div style={S.kanji}>海</div>
+          <h1 style={S.logo}>UMINO</h1>
+          <p style={S.sub}>מסך מנהלת – צור קישור מבחן חדש</p>
+          <div style={{...S.qCard, maxWidth:520, width:"100%"}}>
+            <p style={{fontSize:13,color:"#c4a265",fontWeight:700,marginBottom:8}}>קישור חדש לעובד/ת:</p>
+            <p style={{fontSize:13,color:"#e8e8e8",wordBreak:"break-all",lineHeight:1.6,padding:"10px 12px",background:"rgba(255,255,255,0.04)",borderRadius:8,margin:"0 0 14px",direction:"ltr"}}>{newLink}</p>
+            <button style={{...S.btn, width:"100%"}} onClick={()=>{
+              navigator.clipboard.writeText(newLink).then(()=>alert("הקישור הועתק ✓"));
+            }}>העתק קישור</button>
+            <p style={{fontSize:12,color:"#888",marginTop:14,lineHeight:1.6}}>
+              כל קישור תקף לפתיחת מבחן אחת בלבד. אחרי שהעובד/ת מסיים/ה, הקישור ננעל.<br/>
+              רענן/י את הדף כדי לקבל קישור חדש.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // ── START ──
   if (screen === "start") return (
@@ -120,53 +248,34 @@ function App() {
 
   // ── RESULTS ──
   if (screen === "results") {
-    const p = Math.round((mcScore/25)*100);
-    const pass = p >= 75;
-    const clr = pass ? "#4ade80" : "#f87171";
     return (
       <div style={S.wrap}>
         <div style={S.center}>
           <div style={S.kanji}>海</div>
-          <h1 style={{...S.logo, fontSize:22}}>תוצאות המבחן</h1>
+          <h1 style={{...S.logo, fontSize:22}}>סיימת את המבחן</h1>
           <p style={S.sub}>{name}</p>
-          <div style={{...S.circle, borderColor:clr}}>
-            <span style={{fontSize:42,fontWeight:700,color:clr}}>{p}</span>
-            <span style={{fontSize:18,color:"#888",marginTop:12}}>%</span>
-          </div>
-          <div style={{...S.badge, background:pass?"rgba(74,222,128,0.15)":"rgba(248,113,113,0.15)", color:clr}}>
-            {pass ? "עבר/ה בהצלחה ✓" : "לא עבר/ה ✗"}
-          </div>
-          <p style={{fontSize:14,color:"#777",marginBottom:28}}>{mcScore} תשובות נכונות מתוך 25</p>
 
-          <div style={S.section}>
-            <p style={S.secTitle}>פירוט שאלות אמריקאיות</p>
-            {EXAM.mc.map(q => {
-              const ok = mcAns[q.id] === q.c;
-              return (
-                <div key={q.id} style={S.row}>
-                  <span style={{...S.dot, background: ok?"#4ade80":"#f87171"}}/>
-                  <span style={S.rowQ}>{q.id}. {q.q.length > 55 ? q.q.slice(0,55)+"..." : q.q}</span>
-                  {!ok && <span style={S.rowAns}>תשובה: {L[q.c]}</span>}
-                </div>
-              );
-            })}
-          </div>
+          {sending && (
+            <div style={{...S.qCard, maxWidth:420, textAlign:"center", marginTop:8}}>
+              <p style={{fontSize:16,color:"#e8e8e8",margin:0}}>שולח/ת את התוצאות למנהלת...</p>
+            </div>
+          )}
 
-          <div style={S.section}>
-            <p style={S.secTitle}>תשובות פתוחות (לבדיקת מנהל)</p>
-            {EXAM.open.map(q => (
-              <div key={q.id} style={{padding:"14px 0",borderBottom:"1px solid rgba(255,255,255,0.05)"}}>
-                <p style={{fontSize:14,fontWeight:600,color:"#ccc",margin:"0 0 6px"}}>{q.id}. {q.q}</p>
-                <p style={{fontSize:14,color:"#999",margin:"0 0 10px",lineHeight:1.6,whiteSpace:"pre-wrap"}}>{openAns[q.id] || "(לא נענה)"}</p>
-                <div style={{padding:"10px 14px",borderRadius:10,background:"rgba(196,162,101,0.06)"}}>
-                  <p style={{fontSize:11,color:"#c4a265",fontWeight:700,margin:"0 0 4px"}}>נקודות מצופות:</p>
-                  {q.pts.map((pt,i) => <p key={i} style={{fontSize:12,color:"#888",margin:"2px 0",lineHeight:1.4}}>• {pt}</p>)}
-                </div>
-              </div>
-            ))}
-          </div>
+          {sent && (
+            <div style={{...S.qCard, maxWidth:420, textAlign:"center", marginTop:8, borderColor:"rgba(74,222,128,0.3)"}}>
+              <p style={{fontSize:18,color:"#4ade80",fontWeight:700,margin:"0 0 10px"}}>תודה! ✓</p>
+              <p style={{fontSize:15,color:"#e8e8e8",lineHeight:1.7,margin:0}}>
+                התשובות שלך נשלחו למנהלת לבדיקה.<br/>
+                המנהלת תחזור אלייך עם המשוב.
+              </p>
+            </div>
+          )}
 
-          <button style={{...S.btn, marginTop:20}} onClick={restart}>מבחן חדש</button>
+          {sendError && (
+            <div style={{...S.qCard, maxWidth:420, textAlign:"center", marginTop:8, borderColor:"rgba(248,113,113,0.3)"}}>
+              <p style={{fontSize:15,color:"#f87171",lineHeight:1.7,margin:0}}>{sendError}</p>
+            </div>
+          )}
         </div>
       </div>
     );
@@ -202,10 +311,9 @@ function App() {
         <div style={{padding:"0 16px"}}>
           <textarea style={S.ta} dir="rtl" placeholder="כתוב/י את תשובתך כאן..." rows={5}
             value={openAns[cur.id]||""} onChange={e=>setOpenAns(p=>({...p,[cur.id]:e.target.value}))}/>
-          <div style={S.hints}>
-            <p style={{fontSize:12,color:"#c4a265",fontWeight:700,margin:"0 0 6px"}}>נקודות שצריך לכסות:</p>
-            {cur.pts.map((pt,i) => <p key={i} style={{fontSize:13,color:"#999",margin:"2px 0",lineHeight:1.5}}>• {pt}</p>)}
-          </div>
+          <p style={{fontSize:12,color:"#777",margin:"10px 4px 0",lineHeight:1.5}}>
+            בכל השאלות הפתוחות, רשום/י את התשובה המלאה למטה.
+          </p>
           <button style={{...S.btn, width:"100%", marginTop:12, opacity:(openAns[cur.id]||"").trim()?1:0.4}}
             disabled={!(openAns[cur.id]||"").trim()} onClick={nextOpen}>
             {idx < total-1 ? "שאלה הבאה ←" : "סיים מבחן"}
